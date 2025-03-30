@@ -1,108 +1,187 @@
-#include <WiFi.h>
-#include <WebServer.h>
+/***************************************************
+ * Project: ESP32 Dual Mode Web Server (AP + STA)
+ * Description: Controls GPIOs and monitors internal temperature 
+ *              via a responsive web dashboard with Chart.js.
+ * Author: Omkar Prayag
+ * Email: omkar@circuitveda.com
+ * Date: 2025-03-30
+ * Version:0.1.0
+ * License: MIT
+ ***************************************************/
 
-extern "C" uint8_t temprature_sens_read();
-
-const char* ssid = "SmartHome";
-const char* password = "12345678";
-
-IPAddress local_ip(192, 168, 1, 1);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
-
-WebServer server(80);
-
-uint8_t LED1pin = 2;
-bool LED1status = LOW;
-
-uint8_t LED2pin = 5;
-bool LED2status = LOW;
-
-float currentTempC = 0.0;
-unsigned long previousMillis = 0;
-const long interval = 1000;
-
-// Function prototypes
-void handle_OnConnect();
-void handle_led1on();
-void handle_led1off();
-void handle_led2on();
-void handle_led2off();
-void handle_temperature();
-void handle_NotFound();
-String SendHTML(uint8_t led1stat, uint8_t led2stat);
-
-void setup() {
-  Serial.begin(115200);
-  pinMode(LED1pin, OUTPUT);
-  pinMode(LED2pin, OUTPUT);
-
-  WiFi.softAP(ssid, password);
-  WiFi.softAPConfig(local_ip, gateway, subnet);
-  delay(100);
-
-  server.on("/", handle_OnConnect);
-  server.on("/led1on", handle_led1on);
-  server.on("/led1off", handle_led1off);
-  server.on("/led2on", handle_led2on);
-  server.on("/led2off", handle_led2off);
-  server.on("/temperature", handle_temperature); // new AJAX route
-  server.onNotFound(handle_NotFound);
-
-  server.begin();
-  Serial.println("HTTP server started");
-}
-
-void loop() {
-  server.handleClient();
-
-  digitalWrite(LED1pin, LED1status ? HIGH : LOW);
-  digitalWrite(LED2pin, LED2status ? HIGH : LOW);
-
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-    uint8_t raw = temprature_sens_read();
-    currentTempC = (raw - 32) / 1.8;
-    Serial.print("Internal Temperature: ");
-    Serial.print(currentTempC);
-    Serial.println(" °C");
-  }
-}
-
-void handle_OnConnect() {
-  server.send(200, "text/html", SendHTML(LED1status, LED2status));
-}
-
-void handle_led1on() {
-  LED1status = HIGH;
-  server.send(200, "application/json", "{\"led\":1,\"status\":\"on\"}");
-}
-
-void handle_led1off() {
-  LED1status = LOW;
-  server.send(200, "application/json", "{\"led\":1,\"status\":\"off\"}");
-}
-
-void handle_led2on() {
-  LED2status = HIGH;
-  server.send(200, "application/json", "{\"led\":2,\"status\":\"on\"}");
-}
-
-void handle_led2off() {
-  LED2status = LOW;
-  server.send(200, "application/json", "{\"led\":2,\"status\":\"off\"}");
-}
-
-void handle_temperature() {
-  server.send(200, "text/plain", String(currentTempC, 2));
-}
-
-void handle_NotFound() {
-  server.send(404, "text/plain", "Not found");
-}
-
+ #include <WiFi.h>
+ #include <WebServer.h>
+ 
+ // Read ESP32 internal temperature
+ extern "C" uint8_t temprature_sens_read();
+ 
+ /* ========== WiFi Configuration ========== */
+ 
+ // Access Point (SoftAP) credentials
+ const char* ssid = "SmartHome";
+ const char* password = "12345678";
+ 
+ // Station (STA) credentials - Connects to existing WiFi
+ const char* sta_ssid = "Mingle";
+ const char* sta_password = "12345678123";
+ 
+ // Static IP configuration for SoftAP
+ IPAddress local_ip(192, 168, 1, 1);
+ IPAddress gateway(192, 168, 1, 1);
+ IPAddress subnet(255, 255, 255, 0);
+ 
+ /* ========== Web Server Setup ========== */
+ 
+ WebServer server(80);
+ 
+ /* ========== GPIO Setup ========== */
+ 
+ const uint8_t LED1pin = 2;   // Onboard LED
+ const uint8_t LED2pin = 5;   // External relay
+ bool LED1status = LOW;
+ bool LED2status = LOW;
+ 
+ /* ========== Temperature Monitoring ========== */
+ 
+ float currentTempC = 0.0;
+ unsigned long previousMillis = 0;
+ const long interval = 1000;  // 1 second update interval
+ 
+ /* ========== Function Prototypes ========== */
+ 
+ // Web route handlers
+ void handle_OnConnect();
+ void handle_led1on();
+ void handle_led1off();
+ void handle_led2on();
+ void handle_led2off();
+ void handle_temperature();
+ void handle_NotFound();
+ 
+ // Utility
+ String SendHTML(uint8_t led1stat, uint8_t led2stat);
+ 
+ /* ========== Setup ========== */
+ 
+ void setup() {
+   Serial.begin(115200);
+   pinMode(LED1pin, OUTPUT);
+   pinMode(LED2pin, OUTPUT);
+ 
+   // Enable both AP and STA modes
+   WiFi.mode(WIFI_AP_STA);
+ 
+   // Start SoftAP mode
+   WiFi.softAPConfig(local_ip, gateway, subnet);
+   WiFi.softAP(ssid, password);
+   Serial.println("[AP] SoftAP started");
+   Serial.print("[AP] IP address: ");
+   Serial.println(WiFi.softAPIP());
+ 
+   // Connect to WiFi as Station
+   WiFi.begin(sta_ssid, sta_password);
+   Serial.print("[STA] Connecting to WiFi");
+ 
+   unsigned long startAttemptTime = millis();
+   while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+     Serial.print(".");
+     delay(500);
+   }
+ 
+   if (WiFi.status() == WL_CONNECTED) {
+     Serial.println("\n[STA] Connected!");
+     Serial.print("[STA] IP address: ");
+     Serial.println(WiFi.localIP());
+   } else {
+     Serial.println("\n[STA] Failed to connect");
+   }
+ 
+   // Define HTTP routes
+   server.on("/", handle_OnConnect);
+   server.on("/led1on", handle_led1on);
+   server.on("/led1off", handle_led1off);
+   server.on("/led2on", handle_led2on);
+   server.on("/led2off", handle_led2off);
+   server.on("/temperature", handle_temperature);
+   server.on("/status", []() {
+     String json = "{";
+     json += "\"led1\":" + String(LED1status ? "true" : "false") + ",";
+     json += "\"led2\":" + String(LED2status ? "true" : "false");
+     json += "}";
+     server.send(200, "application/json", json);
+   });
+   server.onNotFound(handle_NotFound);
+ 
+   // Start HTTP server
+   server.begin();
+   Serial.println("HTTP server started");
+ }
+ 
+ /* ========== Main Loop ========== */
+ 
+ void loop() {
+   server.handleClient();
+ 
+   digitalWrite(LED1pin, LED1status ? HIGH : LOW);
+   digitalWrite(LED2pin, LED2status ? HIGH : LOW);
+ 
+   // Periodic internal temperature read
+   unsigned long currentMillis = millis();
+   if (currentMillis - previousMillis >= interval) {
+     previousMillis = currentMillis;
+     uint8_t raw = temprature_sens_read();
+     currentTempC = (raw - 32) / 1.8;
+     Serial.print("Internal Temperature: ");
+     Serial.print(currentTempC);
+     Serial.println(" °C");
+   }
+ }
+ 
+ /* ========== Route Handlers ========== */
+ 
+ void handle_OnConnect() {
+   server.send(200, "text/html", SendHTML(LED1status, LED2status));
+ }
+ 
+ void handle_led1on() {
+   LED1status = HIGH;
+   server.send(200, "application/json", "{\"led\":1,\"status\":\"on\"}");
+ }
+ 
+ void handle_led1off() {
+   LED1status = LOW;
+   server.send(200, "application/json", "{\"led\":1,\"status\":\"off\"}");
+ }
+ 
+ void handle_led2on() {
+   LED2status = HIGH;
+   server.send(200, "application/json", "{\"led\":2,\"status\":\"on\"}");
+ }
+ 
+ void handle_led2off() {
+   LED2status = LOW;
+   server.send(200, "application/json", "{\"led\":2,\"status\":\"off\"}");
+ }
+ 
+ void handle_temperature() {
+   server.send(200, "text/plain", String(currentTempC, 2));
+ }
+ 
+ void handle_NotFound() {
+   server.send(404, "text/plain", "Not found");
+ }
+ 
+ /* ========== HTML Page Generator ========== */
+ // The full HTML+JS+CSS web dashboard is returned here
 String SendHTML(uint8_t led1stat, uint8_t led2stat) {
+  String baseURL;
+
+  if (WiFi.softAPgetStationNum() > 0 || WiFi.status() != WL_CONNECTED) {
+    baseURL = "http://192.168.1.1"; // AP mode
+  } else {
+    baseURL = ""; // STA mode, use relative fetches
+  }
+
   String ptr = "<!DOCTYPE html><html>\n";
   ptr += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n";
   ptr += "<title>ESP32 Control</title>\n";
@@ -118,6 +197,7 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
   // Chart.js & JS
   ptr += "<script src=\"https://cdn.jsdelivr.net/npm/chart.js\"></script>\n";
   ptr += "<script>\n";
+  ptr += "const baseURL = '" + baseURL + "';\n";
   ptr += "let tempData = [], timeLabels = [], chart;\n";
   ptr += "let seconds = 0, autoScale = true;\n";
 
@@ -130,12 +210,13 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
   ptr += "  });\n";
   ptr += "  setInterval(fetchTemperature, 1000);\n";
   ptr += "  setInterval(updateUptime, 1000);\n";
+  ptr += "  setInterval(fetchGPIOStatus, 1000);\n";
   ptr += "  setupLEDButton(1);\n";
   ptr += "  setupLEDButton(2);\n";
   ptr += "};\n";
 
   ptr += "function fetchTemperature() {\n";
-  ptr += "  fetch('/temperature')\n";
+  ptr += "  fetch(baseURL + '/temperature')\n";
   ptr += "    .then(r => r.text())\n";
   ptr += "    .then(temp => {\n";
   ptr += "      document.getElementById('tempValue').innerText = temp + ' °C';\n";
@@ -153,6 +234,33 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
   ptr += "  let mins = Math.floor((seconds % 3600) / 60);\n";
   ptr += "  let secs = seconds % 60;\n";
   ptr += "  document.getElementById('uptime').innerText = `${hrs}h ${mins}m ${secs}s`;\n";
+  ptr += "}\n";
+
+  ptr += "function fetchGPIOStatus() {\n";
+  ptr += "  fetch(baseURL + '/status')\n";
+  ptr += "    .then(r => r.json())\n";
+  ptr += "    .then(data => {\n";
+  ptr += "      updateLEDStatus(1, data.led1);\n";
+  ptr += "      updateLEDStatus(2, data.led2);\n";
+  ptr += "    });\n";
+  ptr += "}\n";
+
+  ptr += "function updateLEDStatus(led, isOn) {\n";
+  ptr += "  document.getElementById(`led${led}status`).innerText = isOn ? 'ON' : 'OFF';\n";
+  ptr += "  const btn = document.getElementById(`led${led}btn`);\n";
+  ptr += "  btn.innerText = isOn ? 'Turn OFF' : 'Turn ON';\n";
+  ptr += "  btn.dataset.state = isOn ? 'on' : 'off';\n";
+  ptr += "}\n";
+
+  ptr += "function setupLEDButton(led) {\n";
+  ptr += "  const btn = document.getElementById(`led${led}btn`);\n";
+  ptr += "  btn.addEventListener('click', () => {\n";
+  ptr += "    const isCurrentlyOn = btn.dataset.state === 'on';\n";
+  ptr += "    const url = led === 1 ? (isCurrentlyOn ? '/led1off' : '/led1on') : (isCurrentlyOn ? '/led2off' : '/led2on');\n";
+  ptr += "    fetch(baseURL + url)\n";
+  ptr += "      .then(r => r.json())\n";
+  ptr += "      .then(data => updateLEDStatus(data.led, data.status === 'on'));\n";
+  ptr += "  });\n";
   ptr += "}\n";
 
   ptr += "function downloadCSV() {\n";
@@ -182,35 +290,19 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
   ptr += "  chart.update();\n";
   ptr += "}\n";
 
-  // New robust LED control
-  ptr += "function updateLEDStatus(led, isOn) {\n";
-  ptr += "  document.getElementById(`led${led}status`).innerText = isOn ? 'ON' : 'OFF';\n";
-  ptr += "  const btn = document.getElementById(`led${led}btn`);\n";
-  ptr += "  btn.innerText = isOn ? 'Turn OFF' : 'Turn ON';\n";
-  ptr += "  btn.dataset.state = isOn ? 'on' : 'off';\n";
-  ptr += "}\n";
-
-  ptr += "function setupLEDButton(led) {\n";
-  ptr += "  const btn = document.getElementById(`led${led}btn`);\n";
-  ptr += "  btn.addEventListener('click', () => {\n";
-  ptr += "    const isCurrentlyOn = btn.dataset.state === 'on';\n";
-  ptr += "    const url = led === 1 ? (isCurrentlyOn ? '/led1off' : '/led1on') : (isCurrentlyOn ? '/led2off' : '/led2on');\n";
-  ptr += "    fetch(url)\n";
-  ptr += "      .then(r => r.json())\n";
-  ptr += "      .then(data => updateLEDStatus(data.led, data.status === 'on'));\n";
-  ptr += "  });\n";
-  ptr += "}\n";
-
   ptr += "</script>\n";
 
   // HTML Body
   ptr += "</head><body>\n";
   ptr += "<h1>ESP32 Web Server</h1>\n";
-  ptr += "<h3>Access Point (AP) Mode</h3>\n";
+  ptr += "<h3>Dual Mode: Access Point + Station</h3>\n";
+  ptr += "<p><b>AP IP Address:</b> " + WiFi.softAPIP().toString() + "</p>\n";
+  if (WiFi.status() == WL_CONNECTED) {
+    ptr += "<p><b>STA IP Address:</b> " + WiFi.localIP().toString() + "</p>\n";
+  } else {
+    ptr += "<p><b>STA IP Address:</b> Not connected</p>\n";
+  }
 
-  ptr += "<p><b>SSID:</b> " + String(ssid) + "</p>\n";
-  ptr += "<p><b>IP Address:</b> " + WiFi.softAPIP().toString() + "</p>\n";
-  ptr += "<p><b>RSSI:</b> " + String(WiFi.RSSI()) + " dBm</p>\n";
   ptr += "<p><b>Uptime:</b> <span id='uptime'>0s</span></p>\n";
 
   ptr += "<p>LED1 Status: <span id='led1status'>" + String(led1stat ? "ON" : "OFF") + "</span></p>\n";

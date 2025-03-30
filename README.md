@@ -1,53 +1,63 @@
 # ESP32-AP CONTROL PANEL
 
-**Version:** v0.0.1  
+**Version:** v0.1.0  
 **Author:** Omkar Prayag  
 **Email:** [omkar@circuitveda.com](mailto:omkar@circuitveda.com)
 
+---
+
 ## 📋 Project Description
 
-This firmware hosts a responsive web dashboard on an ESP32 that allows real-time control and configuration of:
+This firmware runs a **dual-mode ESP32 web server** (Access Point + Station) with a built-in interactive dashboard for:
 
-- ✅ One onboard **LED**
-- ✅ Two **Relay channels**
-- ✅ Dynamic **GPIO mapping**
-- ✅ Live internal **temperature monitoring**
-- ✅ Toggle controls with **live feedback**
-- ✅ No page reloads thanks to AJAX integration
+- ✅ Controlling one onboard **LED**
+- ✅ Managing two **relay outputs**
+- ✅ Real-time **internal temperature monitoring**
+- ✅ Responsive web interface with **live chart**
+- ✅ Data **export to CSV**
+- ✅ Works in both **offline AP mode** and **online STA mode**
 
-Designed for smart home, automation, and remote control use cases.
+Designed for smart home, automation, and educational use cases.
 
 ---
 
 ## 🔧 Features
 
-- 🔌 **SoftAP Mode**: Connect directly to the ESP32 (SSID: `SmartHome`, Password: `12345678`)
-- ⚙️ **Dynamic GPIO Configuration**: Re-assign GPIOs for LED, Relay 1, and Relay 2 from the web UI.
-- 🔄 **Live Toggle Buttons**: Change device states with instant status feedback.
-- 🌡️ **Real-Time Temperature**: Displays internal ESP32 temperature (approximate).
-- 🌐 **Pure Web-Based Interface**: No mobile app or external server needed.
+- 📡 **Dual Wi-Fi Mode**: ESP32 runs in both AP (192.168.1.1) and STA (connects to router) modes simultaneously.
+- 💡 **GPIO Control**: Toggle onboard LED (GPIO 2) and two relays (e.g., GPIO 5).
+- 🌡️ **Temperature Monitoring**: Internal sensor (not highly accurate) with real-time graph (Chart.js).
+- ⚙️ **Live Dashboard**: JavaScript-powered UI with AJAX-based updates — no page reloads!
+- 📈 **Chart Controls**:
+  - Reset temperature graph
+  - Toggle between auto and fixed Y-axis
+  - Export recent data as `.csv` (client-side)
+- 🔌 **Self-Hosted**: No cloud or internet dependency.
 
 ---
 
-## 📷 Web Dashboard Preview
+## 🖥️ Web Dashboard Preview
 
-| Control Panel | GPIO Configuration |
-|---------------|---------------------|
-| ![UI Preview](preview-ui.png) | ![GPIO Form](preview-gpio.png) |
+| Control Panel | Temperature Chart |
+|---------------|--------------------|
+| ![UI Preview](preview-ui.png) | ![Graph Preview](preview-graph.png) |
 
 ---
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### 🔧 Prerequisites
 
-- ESP32 board (e.g., NodeMCU-32S)
-- PlatformIO or Arduino IDE
-- Optional: USB to Serial debugger
+- ESP32 Development Board (e.g., NodeMCU-32S, ESP32 DevKit v1)
+- Arduino IDE or PlatformIO
+- USB cable
+- Serial Monitor (115200 baud)
+- Optional: Wi-Fi access for Station mode testing
 
-### Setup (PlatformIO)
+---
 
-1. Clone this repository:
+### ⚙️ Uploading the Code (Arduino IDE)
+
+1. **Clone this repo** or download the `.zip`:
    ```bash
    git clone https://github.com/esp32-ap_controlpanel.git
    cd esp32-ap_controlpanel
