@@ -1,4 +1,4 @@
-# ESP32-AP_CONTROL PANEL
+# ESP32-AP CONTROL PANEL
 
 **Version:** v0.0.1  
 **Author:** Omkar Prayag  
