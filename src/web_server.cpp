@@ -111,11 +111,62 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
       <title>ESP32 Dashboard</title>
       <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
       <style>
-        body { font-family: Arial; text-align: center; padding: 20px; }
-        .button { background: #3498db; color: white; padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; }
-        .button:hover { background: #2980b9; }
-        input, select { padding: 5px; margin: 5px; }
-      </style>
+  body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    padding: 20px;
+    margin: 0;
+    background-color: #f7f7f7;
+  }
+
+  .button {
+    background: #3498db;
+    color: white;
+    padding: 10px 20px;
+    margin: 5px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+  }
+
+  .button:hover {
+    background: #2980b9;
+  }
+
+  input, select {
+    padding: 5px;
+    margin: 5px;
+    font-size: 16px;
+  }
+
+  /* ✅ Responsive Chart Container */
+  #chart-container {
+    position: relative;
+    width: 100%;
+    max-width: 700px;
+    margin: 20px auto;
+  }
+
+  canvas {
+    width: 100% !important;
+    height: auto !important;
+  }
+
+  @media (max-width: 600px) {
+    h2 {
+      font-size: 1.4rem;
+    }
+    .button {
+      padding: 8px 14px;
+      font-size: 14px;
+    }
+    input, select {
+      font-size: 14px;
+    }
+  }
+</style>
+
     </head>
     <body>
       <h2>ESP32 Web Dashboard</h2>
@@ -128,7 +179,9 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
     html += R"rawliteral(</span> <button class='button' onclick='toggleLED(2)'>Toggle</button></p>
   
       <p><b>Temperature:</b> <span id='temp'>--</span> °C</p>
-      <canvas id='tempChart'></canvas>
+      <div id="chart-container">
+        <canvas id="tempChart"></canvas>
+      </div>
   
       <div>
         <button class='button' onclick='exportCSV()'>Export CSV</button>
@@ -174,6 +227,7 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
             },
             options: {
               animation: false,
+              maintainAspectRatio: false,
               responsive: true,
               scales: {
                 x: {
