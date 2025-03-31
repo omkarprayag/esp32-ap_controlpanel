@@ -191,161 +191,206 @@ void handleGPIOControl() {
 /* ========== HTML Generator ========== */
 String SendHTML(uint8_t led1stat, uint8_t led2stat) {
   String html = R"rawliteral(
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <title>ESP32 Dashboard</title>
-    <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
-    <style>
-      body { font-family: Arial; text-align: center; padding: 20px; }
-      .button { background: #3498db; color: white; padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; }
-      .button:hover { background: #2980b9; }
-      input, select { padding: 5px; margin: 5px; }
-    </style>
-  </head>
-  <body>
-    <h2>ESP32 Web Dashboard</h2>
-    <p><b>LED1:</b> <span id='led1status'>)rawliteral";
-  html += led1stat ? "ON" : "OFF";
-  html += R"rawliteral(</span> <button class='button' onclick='toggleLED(1)'>Toggle</button></p>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>ESP32 Dashboard</title>
+  <link href='https://cdn.jsdelivr.net/npm/uplot@1.6.28/dist/uPlot.min.css' rel='stylesheet'>
+  <script src='https://cdn.jsdelivr.net/npm/uplot@1.6.28/dist/uPlot.iife.min.js'></script>
+  <style>
+    body {
+      font-family: Arial;
+      background: var(--bg, #ffffff);
+      color: var(--fg, #000000);
+      text-align: center;
+      padding: 20px;
+    }
+    .button {
+      background: #3498db;
+      color: white;
+      padding: 10px 20px;
+      margin: 8px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .button:hover {
+      background: #2980b9;
+    }
+    #chart { margin: 20px auto; max-width: 100%; height: 300px; }
+    .metrics, .temp-section, .hover-info, .control-group {
+      margin: 12px auto;
+    }
+  </style>
+</head>
+<body>
+  <h2>ESP32 Web Dashboard</h2>
 
-    <p><b>LED2:</b> <span id='led2status'>)rawliteral";
-  html += led2stat ? "ON" : "OFF";
-  html += R"rawliteral(</span> <button class='button' onclick='toggleLED(2)'>Toggle</button></p>
+  <p><b>LED1:</b> <span id='led1status'>)rawliteral" + String(led1stat ? "ON" : "OFF") + R"rawliteral(</span>
+  <button class='button' onclick='toggleLED(1)'>Toggle</button></p>
 
-    <p><b>Temperature:</b> <span id='temp'>--</span> °C</p>
-    <canvas id='tempChart'></canvas>
+  <p><b>LED2:</b> <span id='led2status'>)rawliteral" + String(led2stat ? "ON" : "OFF") + R"rawliteral(</span>
+  <button class='button' onclick='toggleLED(2)'>Toggle</button></p>
 
-    <div>
-      <button class='button' onclick='exportCSV()'>Export CSV</button>
-      <button class='button' onclick='resetGraph()'>Reset Graph</button>
-      <button class='button' onclick='toggleYScale()' id='scaleToggle'>Auto Y-Scale</button>
-    </div>
+  <div class='temp-section'>
+    <p><b>Temperature:</b> <span id='temp'>--</span> <span id='unit'>°C</span></p>
+  </div>
 
-    <h3>Dynamic GPIO Control</h3>
-    <input id='gpioPin' type='number' placeholder='GPIO #' />
-    <select id='gpioState'>
-      <option value='on'>ON</option>
-      <option value='off'>OFF</option>
-    </select>
-    <button class='button' onclick='sendGPIO()'>Set GPIO</button>
+  <div id='chart'></div>
+  <div class="hover-info">
+    <span id="hoverTime">Time (s): --</span> &nbsp;&nbsp;
+    <span id="hoverTemp">Temp: --</span>
+  </div>
+  <div class='metrics'>
+    <p>Min: <span id="tmin">--</span> &nbsp;&nbsp; Max: <span id="tmax">--</span> &nbsp;&nbsp; Avg: <span id="tavg">--</span></p>
+  </div>
 
-    <script>
-      let ws = new WebSocket('ws://' + location.hostname + ':81/');
-      let tempData = [], timeLabels = [], seconds = 0;
-      let chart, autoScale = true;
+  <div class='control-group'>
+    <button class='button' onclick='setYAuto()'>Auto Y-Scale</button>
+    <button class='button' onclick='setYFixed()'>Fixed Y-Scale</button>
+    <button class='button' onclick='resetZoomX()'>Reset X-Zoom</button>
+    <button class='button' onclick='toggleUnit()'>Toggle °C/°F</button>
+    <button class='button' onclick='exportCSV()'>Export CSV</button>
+  </div>
 
-      ws.onopen = () => ws.send('getStatus');
-      ws.onmessage = evt => {
-        let d = JSON.parse(evt.data);
-        if (d.led1 !== undefined) document.getElementById('led1status').innerText = d.led1 ? 'ON' : 'OFF';
-        if (d.led2 !== undefined) document.getElementById('led2status').innerText = d.led2 ? 'ON' : 'OFF';
-      };
+<script>
+let ws = new WebSocket('ws://' + location.hostname + ':81/');
+let xData = [], yData = [], seconds = 0;
+let uplot;
+let isCelsius = true;
 
-      window.onload = () => {
-        const ctx = document.getElementById('tempChart').getContext('2d');
-        chart = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: timeLabels,
-            datasets: [{
-              label: 'Temperature (°C)',
-              data: tempData,
-              borderColor: 'rgba(75,192,192,1)',
-              backgroundColor: 'rgba(75,192,192,0.2)',
-              fill: true,
-              tension: 0.3,
-              pointRadius: 2
-            }]
-          },
-          options: {
-            animation: false,
-            responsive: true,
-            scales: {
-              x: {
-                title: { display: true, text: 'Time (s)' },
-                ticks: { autoSkip: true, maxTicksLimit: 20 }
-              },
-              y: {
-                title: { display: true, text: 'Temperature (°C)' },
-                min: undefined,
-                max: undefined,
-                ticks: {
-                  callback: v => v.toFixed(1) + ' °C'
-                }
-              }
-            },
-            plugins: { legend: { display: false } }
-          }
-        });
-        setInterval(fetchTemp, 1000);
-      };
+ws.onmessage = evt => {
+  const d = JSON.parse(evt.data);
+  if (d.led1 !== undefined)
+    document.getElementById("led1status").innerText = d.led1 ? "ON" : "OFF";
+  if (d.led2 !== undefined)
+    document.getElementById("led2status").innerText = d.led2 ? "ON" : "OFF";
+};
 
-      function fetchTemp() {
-        fetch('/temperature').then(r => r.text()).then(t => {
-          let temp = parseFloat(t);
-          document.getElementById('temp').innerText = t;
-          tempData.push(temp);
-          timeLabels.push(seconds++);
+function toggleLED(num) {
+  const id = `led${num}status`;
+  const isOn = document.getElementById(id).innerText === "ON";
+  const url = `/led${num}${isOn ? 'off' : 'on'}`;
+  fetch(url).then(() => ws.send("getStatus"));
+}
 
-          if (!autoScale) {
-            chart.options.scales.y.min = Math.floor(temp - 3);
-            chart.options.scales.y.max = Math.ceil(temp + 3);
-          } else {
-            chart.options.scales.y.min = undefined;
-            chart.options.scales.y.max = undefined;
-          }
-          chart.update();
-        });
-      }
+function updateStats() {
+  if (yData.length) {
+    const min = Math.min(...yData);
+    const max = Math.max(...yData);
+    const avg = yData.reduce((a, b) => a + b, 0) / yData.length;
+    document.getElementById("tmin").innerText = min.toFixed(2);
+    document.getElementById("tmax").innerText = max.toFixed(2);
+    document.getElementById("tavg").innerText = avg.toFixed(2);
+  }
+}
 
-      function toggleLED(num) {
-        let id = num === 1 ? 'led1status' : 'led2status';
-        let url = (document.getElementById(id).innerText === 'ON') ? `/led${num}off` : `/led${num}on`;
-        fetch(url).then(() => ws.send('getStatus'));
-      }
-
-      function sendGPIO() {
-        let pin = document.getElementById('gpioPin').value;
-        let state = document.getElementById('gpioState').value;
-        fetch(`/gpio?pin=${pin}&state=${state}`)
-          .then(r => r.json()).then(j => alert(`GPIO ${j.pin} set ${j.state}`));
-      }
-
-      function resetGraph() {
-        tempData = [];
-        timeLabels = [];
-        seconds = 0;
-        chart.data.labels = timeLabels;
-        chart.data.datasets[0].data = tempData;
-        chart.update();
-      }
-
-      function exportCSV() {
-        let csv = 'Time(s),Temperature(°C)\n';
-        for (let i = 0; i < tempData.length; i++) {
-          csv += `${timeLabels[i]},${tempData[i].toFixed(2)}\n`;
+function initChart() {
+  const opts = {
+    width: Math.min(window.innerWidth - 40, 700),
+    height: 300,
+    cursor: {
+      drag: { x: true, y: false },
+      focus: { prox: 30 }
+    },
+    hooks: {
+      ready: [u => {
+        u.over.addEventListener("wheel", e => {
+          e.preventDefault();
+          const factor = e.deltaY < 0 ? 0.9 : 1.1;
+          const min = u.scales.x.min;
+          const max = u.scales.x.max;
+          const center = (min + max) / 2;
+          const range = (max - min) * factor;
+          u.setScale("x", { min: center - range / 2, max: center + range / 2 });
+        }, { passive: false });
+      }]
+    },
+    series: [
+      { label: "Time (s)" },
+      {
+        label: "Temp",
+        stroke: "orange",
+        fill: "rgba(255,165,0,0.2)",
+        points: { show: true },
+        value: (u, v, si, i) => {
+          if (i == null) return "--";
+          const t = xData[i];
+          const temp = yData[i].toFixed(2);
+          document.getElementById("hoverTime").innerText = `Time (s): ${t}`;
+          document.getElementById("hoverTemp").innerText = `Temp: ${temp}${isCelsius ? " °C" : " °F"}`;
+          return `Time: ${t}s\\nTemp: ${temp}`;
         }
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'temperature_log.csv';
-        a.click();
       }
+    ],
+    axes: [
+      { label: "Time (s)" },
+      { label: "Temperature" }
+    ],
+    scales: {
+      x: { time: false },
+      y: { auto: true }
+    }
+  };
+  uplot = new uPlot(opts, [xData, yData], document.getElementById("chart"));
+}
 
-      function toggleYScale() {
-        autoScale = !autoScale;
-        document.getElementById('scaleToggle').innerText = autoScale ? 'Auto Y-Scale' : 'Fixed Y-Scale';
-        chart.options.scales.y.min = undefined;
-        chart.options.scales.y.max = undefined;
-        chart.update();
+function fetchTemp() {
+  fetch('/temperature')
+    .then(r => r.text())
+    .then(t => {
+      const c = parseFloat(t);
+      if (!isNaN(c)) {
+        const val = isCelsius ? c : (c * 9/5 + 32);
+        document.getElementById('temp').innerText = val.toFixed(2);
+        xData.push(seconds++);
+        yData.push(val);
+        uplot.setData([xData, yData]);
+        updateStats();
       }
-    </script>
-  </body>
-  </html>
-  )rawliteral";
+    });
+}
+
+function toggleUnit() {
+  isCelsius = !isCelsius;
+  document.getElementById("unit").innerText = isCelsius ? "°C" : "°F";
+  yData = yData.map(v => isCelsius ? (v - 32) * 5 / 9 : (v * 9 / 5 + 32));
+  uplot.setData([xData, yData]);
+  updateStats();
+}
+
+function setYAuto() {
+  uplot.setScale("y", { min: null, max: null });
+}
+function setYFixed() {
+  uplot.setScale("y", { min: 20, max: 60 });
+}
+function resetZoomX() {
+  uplot.setScale("x", { min: null, max: null });
+}
+function exportCSV() {
+  let csv = "Time(s),Temp(" + (isCelsius ? "°C" : "°F") + ")\\n";
+  for (let i = 0; i < xData.length; i++) {
+    csv += xData[i] + "," + yData[i].toFixed(2) + "\\n";
+  }
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "temperature_log.csv";
+  a.click();
+}
+
+window.onload = () => {
+  initChart();
+  setInterval(fetchTemp, 1000);
+  ws.send("getStatus");
+};
+</script>
+</body>
+</html>
+)rawliteral";
   return html;
 }
