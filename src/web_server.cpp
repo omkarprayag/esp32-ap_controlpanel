@@ -26,6 +26,7 @@ void initWebServer() {
   server.on("/gpio", handleGPIOControl);
   server.onNotFound(handle_NotFound);
   server.begin();
+  Serial.println("HTTP server started");
 }
 
 void initWebSocket() {

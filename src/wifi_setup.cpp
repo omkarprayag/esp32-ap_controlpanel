@@ -10,14 +10,30 @@ IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 void initWiFi() {
+  unsigned long startAttemptTime = millis();
+
   WiFi.mode(WIFI_AP_STA);
+
   WiFi.softAPConfig(local_ip, gateway, subnet);
   WiFi.softAP(ssid, password);
-  WiFi.begin(sta_ssid, sta_password);
+  Serial.println("[AP] SoftAP started");
+  Serial.print("[AP] IP address: ");
+  Serial.println(WiFi.softAPIP());
 
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+  WiFi.begin(sta_ssid, sta_password);
+  Serial.print("[STA] Connecting to WiFi");
+ 
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+    Serial.print(".");
     delay(500);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[STA] Connected!");
+    Serial.print("[STA] IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n[STA] Failed to connect");
   }
 }
 
