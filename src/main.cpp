@@ -10,6 +10,7 @@
 // ***************************************************
 
 #include <Arduino.h>
+#include "fs_spiffs.h"
 #include "web_server.h"
 #include "gpio_control.h"
 #include "temperature.h"
@@ -17,6 +18,8 @@
 
 void setup() {
   Serial.begin(115200);
+  initSpiffs();
+  printVersion();
   initGPIO();
   initWiFi();
   initWebServer();
