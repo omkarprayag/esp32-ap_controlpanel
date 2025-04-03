@@ -15,8 +15,14 @@
 #include "gpio_control.h"
 #include "temperature.h"
 #include "wifi_setup.h"
+#include "utilities.h"
+
+unsigned long bootMillis;
 
 void setup() {
+
+  bootMillis = millis();
+
   Serial.begin(115200);
   initSpiffs();
   printVersion();
@@ -28,6 +34,7 @@ void setup() {
 }
 
 void loop() {
+
   handleClients();
   updateTemperature();
   maintainWiFi();
