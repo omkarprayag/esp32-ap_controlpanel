@@ -16,6 +16,8 @@
 #include "temperature.h"
 #include "wifi_setup.h"
 #include "utilities.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 
 unsigned long bootMillis;
 
@@ -31,6 +33,7 @@ void setup() {
   initWebServer();
   initWebSocket();
   loadStates();
+  handleOtaUpdate();
 }
 
 void loop() {
@@ -38,4 +41,10 @@ void loop() {
   handleClients();
   updateTemperature();
   maintainWiFi();
+
+  if (shouldReboot) {
+    Serial.println("OTA update complete. Rebooting...");
+    delay(1000);
+    ESP.restart();
+  }
 }

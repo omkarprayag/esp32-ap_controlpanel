@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include "wifi_setup.h"
 #include <ESPmDNS.h>
+#include <utilities.h>
 
 const char* ssid = "SmartHome";     // AP
 const char* password = "12345678";

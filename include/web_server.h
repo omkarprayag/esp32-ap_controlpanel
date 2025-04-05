@@ -12,6 +12,8 @@ void handle_led2off();
 void handle_temperature();
 void handle_NotFound();
 void handleGPIOControl();
-String SendHTML(uint8_t led1stat, uint8_t led2stat);
+void handleOtaUpdate();
 
+String SendHTML(uint8_t led1stat, uint8_t led2stat);
+extern bool shouldReboot;
 #endif

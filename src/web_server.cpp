@@ -2,16 +2,24 @@
 #include "web_server.h"
 #include <WebServer.h>
 #include <WebSocketsServer.h>
+#include <ArduinoJson.h>
 #include "gpio_control.h"
 #include "temperature.h"
 #include "utilities.h"
+#include <Update.h>
+#include <Preferences.h>
+#include "esp_partition.h"
+#include "esp_ota_ops.h"
 
+Preferences prefs_ota;
 WebServer server(80);
 WebSocketsServer webSocket(81);
 
 static int lastRSSI = 0;
 unsigned long lastPush = 0;
 const int rssiThreshold = 5;
+bool shouldReboot = false;
+String firmwareVersion = String(FW_VERSION) + " (" + String(__DATE__) + " " + String(__TIME__) + ")";
 
 extern unsigned long bootMillis;
 extern float tempBuffer[MAX_TEMP_POINTS];
@@ -46,6 +54,18 @@ void initWebServer() {
     server.send(404, "text/plain", "Not found");
   });
 
+  if (prefs_ota.begin("ota", false)) {
+    if (!prefs_ota.isKey("version_factory")) {
+      prefs_ota.putString("version_factory", firmwareVersion);
+      Serial.println("✅ Factory version stored: " + firmwareVersion);
+    } else {
+      Serial.println("ℹ️ Factory version already exists.");
+    }
+    prefs_ota.end();
+  } else {
+    Serial.println("❌ Failed to init OTA preferences.");
+  } 
+  
   server.begin();
   Serial.println("HTTP server started");
 }
@@ -166,7 +186,162 @@ void handleGPIOControl() {
     digitalWrite(pin, state == "on" ? HIGH : LOW);
     server.send(200, "application/json", "{\"pin\":" + String(pin) + ",\"state\":\"" + state + "\"}");
 }
-     
+
+void handleOtaUpdate() {
+  prefs_ota.begin("ota", false);
+
+  // === OTA Upload Handler ===
+  server.on("/update", HTTP_POST, []() {}, []() {
+    HTTPUpload& upload = server.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("OTA Start: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+      }
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    }
+    else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) {
+        Serial.println("✅ OTA Success. Rebooting soon...");
+
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        String label = running ? String(running->label) : "unknown";
+        
+        prefs_ota.end();  
+        prefs_ota.begin("ota", false);
+        
+        if (label == "ota_0") {
+          prefs_ota.putString("version_ota_0", firmwareVersion);
+        } else if (label == "ota_1") {
+          prefs_ota.putString("version_ota_1", firmwareVersion);
+        }
+
+        prefs_ota.putString("lastUpdate", String(millis()));
+        prefs_ota.putString("lastVersion", firmwareVersion);
+        prefs_ota.putString("lastPart", label);
+        prefs_ota.putString("version_factory", firmwareVersion.c_str());
+
+        String hist = prefs_ota.getString("updateHistory", "");
+        hist += firmwareVersion + " @ " + String(millis()) + " -> " + label + "\n";
+        prefs_ota.putString("updateHistory", hist);
+        prefs_ota.end();
+        shouldReboot = true;
+        server.send(200, "text/plain", "Update OK");
+      } else {
+        Update.printError(Serial);
+        server.send(500, "text/plain", "Update Failed");
+      }
+    }
+  });
+
+  // === Serve Version Info ===
+  server.on("/ota_version", HTTP_GET, []() {
+    prefs_ota.begin("ota", true);
+    String version = prefs_ota.getString("lastVersion", firmwareVersion);
+    prefs_ota.end();
+  
+    server.send(200, "text/plain", version);
+  });
+
+  server.on("/current_version", HTTP_GET, []() {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    String label = running ? String(running->label) : "unknown";
+  
+    String version;
+    if (label == "ota_0") {
+      version = prefs_ota.getString("version_ota_0", "Unknown");
+    } else if (label == "ota_1") {
+      version = prefs_ota.getString("version_ota_1", "Unknown");
+    } else if (label == "factory") {
+      version = prefs_ota.getString("version_factory", "Unknown");
+    }
+  
+    server.send(200, "text/plain", version);
+  });
+
+  server.on("/ota_time", HTTP_GET, []() {
+    prefs_ota.begin("ota", true);  
+    String time = prefs_ota.getString("lastUpdate", "Never");
+    prefs_ota.end();
+    server.send(200, "text/plain", time);
+  });
+
+  // === Dropdown with all available versions ===
+  server.on("/ota_versions", HTTP_GET, []() {
+    StaticJsonDocument<512> doc;
+    JsonArray arr = doc.to<JsonArray>();
+
+    prefs_ota.begin("ota", true);
+
+    // Factory version
+    JsonObject o0 = arr.createNestedObject();
+    o0["partition"] = "factory";
+    o0["label"] = prefs_ota.getString("version_factory", "Factory");
+
+    String v0 = prefs_ota.getString("version_ota_0", "Unknown");
+    JsonObject o1 = arr.createNestedObject();
+    o1["partition"] = "ota_0";
+    o1["label"] = v0 + " (ota_0)";
+
+    String v1 = prefs_ota.getString("version_ota_1", "Unknown");
+    JsonObject o2 = arr.createNestedObject();
+    o2["partition"] = "ota_1";
+    o2["label"] = v1 + " (ota_1)";
+
+    prefs_ota.end();
+
+    String output;
+    serializeJson(doc, output);
+    server.send(200, "application/json", output);
+  });
+
+  // === Switch boot partition ===
+  server.on("/switch_partition", HTTP_GET, []() {
+    if (!server.hasArg("target")) {
+      server.send(400, "text/plain", "Missing target partition");
+      return;
+    }
+
+    String target = server.arg("target");
+
+    const esp_partition_t* part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_APP,
+      target == "factory" ? ESP_PARTITION_SUBTYPE_APP_FACTORY :
+      target == "ota_0"   ? ESP_PARTITION_SUBTYPE_APP_OTA_0 :
+      target == "ota_1"   ? ESP_PARTITION_SUBTYPE_APP_OTA_1 :
+                            ESP_PARTITION_SUBTYPE_ANY,
+      NULL
+    );
+
+    if (!part) {
+      server.send(404, "text/plain", "Partition not found");
+      return;
+    }
+
+    if (esp_ota_set_boot_partition(part) == ESP_OK) {
+      server.send(200, "text/plain", "✅ Boot partition set successfully.");
+      shouldReboot = true;
+    } else {
+      server.send(500, "text/plain", "❌ Failed to set boot partition.");
+    }
+  });
+
+  // === Full OTA update history list ===
+  server.on("/ota_history", HTTP_GET, []() {
+    String hist = prefs_ota.getString("updateHistory", "");
+    hist.trim();
+    hist.replace("\n", "\",\"");
+    server.send(200, "application/json", "[\"" + hist + "\"]");
+  });
+
+  prefs_ota.end();
+}
+
 /* ========== HTML Generator ========== */
 String SendHTML(uint8_t led1stat, uint8_t led2stat) {
     String html = R"rawliteral(
@@ -495,6 +670,57 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
         <button class='button' onclick='exportCSV()'>Export CSV</button>
         <button class='button' onclick='resetGraph()'>Reset Graph</button>
       </div>
+      <div style="height: 30px;"></div>        
+
+      <section id="otaUpdateSection">
+        <h3>OTA Firmware Update</h3>
+        <p><strong>Current OTA Version:</strong> <span id="currentVersion">Loading...</span></p>
+        <p><strong>Last Uploaded OTA Version:</strong> <span id="lastUploadedVersion">Loading...</span></p>
+        <p><strong>Last Update:</strong> <span id="lastUpdate">Loading...</span></p>
+
+        <div style="display: flex; justify-content: center; align-items: center; gap: 14px; margin: 12px 0;">
+          <!-- Styled Choose File button -->
+          <label for="firmwareFile" class="button" style="margin: 0; cursor: pointer; display: inline-block; text-align: center; line-height: 40px;">
+            Choose File
+          </label>
+          <input type="file" id="firmwareFile" style="display: none;" onchange="showSelectedFile(this)">
+          <button id="uploadBtn" class="button" onclick="uploadFirmware()">Upload Firmware</button>
+        </div>
+
+        <p id="selectedFileName" style="text-align: center; font-size: 14px; color: #444;"></p>
+
+        <!-- 🟦 Progress Bar HTML starts here -->
+        <div id="otaProgressWrapper" style="width: 100%; max-width: 300px; margin: 10px auto; display: none;">
+          <progress id="otaProgress" value="0" max="100" style="width: 100%; height: 20px;"></progress>
+          <div id="otaProgressText">0%</div>
+        </div>
+        <!-- 🟦 Progress Bar HTML ends here -->
+
+        <div id="otaStatus"></div>
+
+        <h4 style="text-align: center;">Update History</h4>
+
+        <div style="display: flex; justify-content: center;">
+          <ul id="otaHistoryList" style="
+            list-style: disc;
+            text-align: left;
+            padding-left: 24px;
+            margin: 0;
+            max-width: 320px;
+            font-size: 14px;
+            color: #444;
+            line-height: 1.6;
+          "></ul>
+        </div>
+      </section>
+      <div style="height: 160px;"></div>
+      
+      <h4>Switch Firmware Version</h4>
+      <div style="margin: 10px 0;">
+        <select id="versionSelector" class="button" style="width: auto;"></select>
+        <button id="switchBtn" class="button" onclick="switchFirmware()">Switch Version</button>
+      </div>
+      <p id="switchStatus" style="font-size: 14px; color: #555;"></p>
       <div style="height: 160px;"></div>
 
       <!-- ========== Footer ========== -->
@@ -518,6 +744,7 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
         let ws = new WebSocket('ws://' + location.hostname + ':81/');
         let tempData = [], timeLabels = [], seconds = 0, sessionSeconds = 0;
         let chart, autoScale = true;
+        let countdown = 10;
 
         function updateTempStats() {
           if (tempData.length === 0) return;
@@ -739,6 +966,186 @@ String SendHTML(uint8_t led1stat, uint8_t led2stat) {
           chart.update();
           updateTempStats();
         }
+
+        function showSelectedFile(input) {
+          const fileNameDisplay = document.getElementById("selectedFileName");
+          const file = input.files[0];
+          fileNameDisplay.innerText = file ? `Selected: ${file.name}` : "";
+        }
+
+        function uploadFirmware() {
+          const fileInput = document.getElementById('firmwareFile');
+          const file = fileInput.files[0];
+          const status = document.getElementById('otaStatus');
+          const progressBar = document.getElementById('otaProgress');
+          const progressText = document.getElementById('otaProgressText');
+          const progressWrapper = document.getElementById('otaProgressWrapper');
+
+          const chooseBtn = document.querySelector("label[for='firmwareFile']");
+          const uploadBtn = document.querySelector("button[onclick='uploadFirmware()']");
+
+          if (!file) {
+            alert("Please select a firmware file first.");
+            return;
+          }
+
+          chooseBtn.style.pointerEvents = "none";
+          chooseBtn.style.opacity = "0.5";
+          uploadBtn.disabled = true;
+          uploadBtn.style.opacity = "0.5";
+
+          const xhr = new XMLHttpRequest();
+
+          xhr.upload.onprogress = function (event) {
+            if (event.lengthComputable) {
+              const percent = Math.round((event.loaded / event.total) * 100);
+              progressBar.value = percent;
+              progressText.innerText = percent + "%";
+            }
+          };
+
+          xhr.onloadstart = () => {
+            progressWrapper.style.display = "block";
+            progressBar.value = 0;
+            progressText.innerText = "0%";
+            status.innerText = "📤 Uploading firmware...";
+          };
+
+          xhr.onload = () => {
+            if (xhr.status === 200) {
+              let countdown = 10;
+              status.innerText = `✅ Update successful. Rebooting in ${countdown} seconds...`;
+
+              const countdownInterval = setInterval(() => {
+                countdown--;
+                if (countdown > 0) {
+                  status.innerText = `✅ Update successful. Rebooting in ${countdown} seconds...`;
+                } else {
+                  clearInterval(countdownInterval);
+                  status.innerText = "🔁 Checking if device is back...";
+
+                  const tryReconnect = setInterval(() => {
+                    fetch("/", { method: "HEAD", cache: "no-cache" })
+                      .then(() => {
+                        clearInterval(tryReconnect);
+                        status.innerText = "✅ Device is back. Reloading...";
+                        location.reload();
+                      })
+                      .catch(() => {
+                        status.innerText = "⏳ Waiting for device to come back online...";
+                      });
+                  }, 2000);
+                }
+              }, 1000);
+            } else {
+              status.innerText = "❌ Firmware upload failed.";
+              chooseBtn.style.pointerEvents = "auto";
+              chooseBtn.style.opacity = "1";
+              uploadBtn.disabled = false;
+              uploadBtn.style.opacity = "1";
+            }
+          };
+
+          xhr.onerror = () => {
+            status.innerText = "❌ Network error during upload.";
+            chooseBtn.style.pointerEvents = "auto";
+            chooseBtn.style.opacity = "1";
+            uploadBtn.disabled = false;
+            uploadBtn.style.opacity = "1";
+          };
+
+          xhr.open("POST", "/update", true);
+          const formData = new FormData();
+          formData.append("update", file);
+          xhr.send(formData);
+        }
+
+        async function loadOtaInfo() {
+          try {
+            const version = await fetch('/current_version').then(r => r.text());
+            const lastUploaded = await fetch('/ota_version').then(r => r.text());
+            const updated = await fetch('/ota_time').then(r => r.text());
+            const history = await fetch('/ota_history').then(r => r.json());
+
+            document.getElementById("currentVersion").innerText = version;
+            document.getElementById("lastUploadedVersion").innerText = lastUploaded;
+            document.getElementById("lastUpdate").innerText = updated;
+
+            const list = document.getElementById("otaHistoryList");
+            list.innerHTML = "";
+            history.forEach(entry => {
+              const li = document.createElement("li");
+              li.textContent = entry;
+              list.appendChild(li);
+            });
+          } catch (err) {
+            console.error("Error loading OTA info:", err);
+          }
+        }
+        
+        async function loadVersionsDropdown() {
+          const versions = await fetch('/ota_versions').then(r => r.json());
+          const dropdown = document.getElementById('versionSelector');
+          dropdown.innerHTML = '';
+
+          versions.forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v.partition;
+            opt.text = v.label;
+            dropdown.appendChild(opt);
+          });
+        }
+
+        async function switchFirmware() {
+          const firmwareInput = document.getElementById("firmwareFile");
+          const switchBtn = document.getElementById("switchBtn");
+          const status = document.getElementById("switchStatus");
+
+          const partition = sel.value;
+          const versionLabel = sel.options[sel.selectedIndex].text;
+
+          if (!partition) return;
+
+          firmwareInput.disabled = true;
+          switchBtn.disabled = true;
+
+          status.innerText = `🔄 Switching to ${versionLabel}...`;
+
+          try {
+            const res = await fetch(`/switch_partition?target=${partition}`);
+            const msg = await res.text();
+
+            if (res.ok) {
+              status.innerText = `${msg} 🔁 Rebooting...`;
+
+              let count = 5;
+              const countdownText = document.createElement("div");
+              countdownText.id = "rebootCountdown";
+              countdownText.style.marginTop = "10px";
+              status.appendChild(countdownText);
+
+              const timer = setInterval(() => {
+                if (count > 0) {
+                  countdownText.innerText = `🔁 Reloading in ${count--}s...`;
+                } else {
+                  clearInterval(timer);
+                  location.reload();
+                }
+              }, 1000);
+            } else {
+              status.innerText = `❌ Switch failed: ${msg}`;
+              firmwareInput.disabled = false;
+              switchBtn.disabled = false;
+            }
+          } catch (err) {
+            status.innerText = `❌ Error switching: ${err}`;
+            firmwareInput.disabled = false;
+            switchBtn.disabled = false;
+          }
+        }
+
+        window.addEventListener('load', loadOtaInfo);
+        window.addEventListener("load", loadVersionsDropdown);
       </script>
     </body>
     </html>
